@@ -25,6 +25,8 @@
 //          http://blog.squix.org/2015/08/esp8266arduino-playing-around-with.html
 // WiFiManager - https://github.com/tzapu/WiFiManager
 // ESP-GDBStub - https://github.com/esp8266/Arduino/tree/master/libraries/GDBStub
+// Offline Debugging - https://blog.squix.org/2016/04/esp8266-offline-debugging-with.html
+// Stack Trace Decoder - https://github.com/me-no-dev/EspExceptionDecoder
 
 #include <stdio.h>
 #include <string.h>
@@ -57,69 +59,70 @@ ADC_MODE ( ADC_VCC );                                                           
 // Use the internal hardware buffer
 static void _u0_putc ( char c )
 {
-    while ( ( ( U0S >> USTXC ) & 0x7F ) == 0x7F );
+    while ( ( ( U0S >> USTXC ) & 0x7F ) == 0x7F ) ;
 
     U0F = c;
 }
+
 
 //
 //******************************************************************************************
 // Forward declaration of methods                                                          *
 //******************************************************************************************
-int setupAP ( int chan_selected ) ;
+int setupAP ( int chan_selected );
 
 //***************************************************************************
 // Global data section.                                                     *
 //***************************************************************************
-float           version     = 1.40;
-const char      *appid      = "mobile-rr";
-char            ssid[]      = "FREE Highspeed WiFi";
-int             channel     = 0;
-char            username[]  = "admin";
-char            password[]  = "";
-bool            DEBUG       = 1;
-bool            SILENT      = 0;
-int             interval    = 30;                                               // 30 Minutes
+float version               = 1.43;
+const char *appid           = "mobile-rr";
+char ssid[]                 = "FREE Highspeed WiFi";
+int channel                 = 0;
+char username[]             = "admin";
+char password[]             = "";
+bool DEBUG                  = 1;
+bool SILENT                 = 0;
+int interval                = 30;                                               // 30 Minutes
 
 #define PIEZO_PIN       4
 
 // Maximum number of simultaneous clients connected (WebSocket)
-#define MAX_WS_CLIENT   5
+#define MAX_WS_CLIENT   3
 
 #define CLIENT_NONE     0
 #define CLIENT_ACTIVE   1
 
 
 #define HELP_TEXT "[[b;green;]ESP8266 Mobile Rick Roll]\n" \
-                  "------------------------\n" \
-                  "[[b;cyan;]?] or [[b;cyan;]help]    show this help\n\n" \
-                  "[[b;cyan;]debug {1/0}]  show/set debug output\n" \
-                  "[[b;cyan;]silent {0/1}] show/set silent mode\n" \
-                  "[[b;cyan;]ssid 's']     show/set SSID to 's'\n" \
-                  "[[b;cyan;]chan {0-11}]  show/set channel (0=auto)\n" \
-                  "[[b;cyan;]int {n}]      show/set auto scan interval\n" \
-                  "               where 'n' is mins (0=off)\n" \
-                  "[[b;cyan;]msg 's']      show/set message to 's'\n" \
-                  "[[b;cyan;]user 's']     show/set username to 's'\n" \
-                  "[[b;cyan;]pass 's']     show/set password to 's'\n\n" \
-                  "[[b;cyan;]beep {n/rr}]  sound piezo for 'n' ms\n" \
-                  "[[b;cyan;]count]        show Rick Roll count\n" \
-                  "[[b;cyan;]info]         show system information\n" \
-                  "[[b;cyan;]json {e/s/i}] show EEPROM, App Settings,\n" \
-                  "               or System Information\n\n" \
-                  "[[b;cyan;]ls]           list SPIFFS files\n" \
-                  "[[b;cyan;]cat 's']      read SPIFFS file 's'\n" \
-                  "[[b;cyan;]rm 's']       remove SPIFFS file 's'\n\n" \
-                  "[[b;cyan;]scan]         scan WiFi networks in area\n\n" \
-                  "[[b;cyan;]reboot]       reboot system\n" \
-                  "[[b;cyan;]reset]        reset default settings\n" \
-                  "[[b;cyan;]save]         save settings to EEPROM"
+        "------------------------\n" \
+        "[[b;cyan;]?] or [[b;cyan;]help]    show this help\n\n" \
+        "[[b;cyan;]debug {0/1}]  show/set debug output\n" \
+        "[[b;cyan;]silent {0/1}] show/set silent mode\n" \
+        "[[b;cyan;]ssid 's']     show/set SSID to 's'\n" \
+        "[[b;cyan;]chan {0-11}]  show/set channel (0=auto)\n" \
+        "[[b;cyan;]int {n}]      show/set auto scan interval\n" \
+        "               where 'n' is mins (0=off)\n" \
+        "[[b;cyan;]msg 's']      show/set message to 's'\n" \
+        "[[b;cyan;]user 's']     show/set username to 's'\n" \
+        "[[b;cyan;]pass 's']     show/set password to 's'\n\n" \
+        "[[b;cyan;]beep {n/rr}]  sound piezo for 'n' ms\n" \
+        "[[b;cyan;]count]        show Rick Roll count\n" \
+        "[[b;cyan;]info]         show system information\n" \
+        "[[b;cyan;]json {e/s/i}] show EEPROM, App Settings,\n" \
+        "               or System Information\n\n" \
+        "[[b;cyan;]ls]           list SPIFFS files\n" \
+        "[[b;cyan;]cat 's']      read SPIFFS file 's'\n" \
+        "[[b;cyan;]rm 's']       remove SPIFFS file 's'\n\n" \
+        "[[b;cyan;]scan]         scan WiFi networks in area\n\n" \
+        "[[b;cyan;]reboot]       reboot system\n" \
+        "[[b;cyan;]reset]        reset default settings\n" \
+        "[[b;cyan;]save]         save settings to EEPROM"
 
 // Web Socket client state
 typedef struct
 {
-    uint32_t  id;
-    uint8_t   state;
+    uint32_t id;
+    uint8_t state;
 } _ws_client;
 
 enum class statemachine
@@ -132,24 +135,26 @@ enum class statemachine
     ap_change,
     read_file
 };
-statemachine    state = statemachine::none;
-int             state_int;
-String          state_string;
+statemachine state = statemachine::none;
+int state_int;
+String state_string;
 
-IPAddress       ip ( 10, 10, 10, 1 );                                           // Private network for httpd
-DNSServer       dnsd;                                                           // Create the DNS object
-MDNSResponder   mdns;
+IPAddress ip ( 192, 168, 4, 1 );                                                // Private network for httpd
+IPAddress mask ( 255, 255, 255, 0 );
+DNSServer dnsd;                                                                 // Create the DNS object
+MDNSResponder mdns;
 
-AsyncWebServer  httpd ( 80 );                                                   // Instance of embedded webserver
-AsyncWebSocket  ws ( "/ws" );                                                   // access at ws://[esp ip]/ws
-_ws_client      ws_client[MAX_WS_CLIENT];                                       // State Machine for WebSocket Client;
+AsyncWebServer httpd ( 80 );                                                    // Instance of embedded webserver
+AsyncWebSocket ws ( "/ws" );                                                    // access at ws://[esp ip]/ws
+_ws_client ws_client[MAX_WS_CLIENT];                                            // State Machine for WebSocket Client;
 
-Ticker          timer;                                                          // Setup Auto Scan Timer
+Ticker timer;                                                                   // Setup Auto Scan Timer
 
-int             rrsession;                                                      // Rick Roll Count Session
-int             rrtotal;                                                        // Rick Roll Count Total
-char            str_vcc[8];
-int             chan_selected;
+int rrsession;                                                                  // Rick Roll Count Session
+int rrtotal;                                                                    // Rick Roll Count Total
+char str_vcc[8];
+int chan_selected;
+uint16_t file_count;
 
 //***************************************************************************
 // End of global data section.                                              *
@@ -191,20 +196,49 @@ String encryptionTypes ( int which )
 //***************************************************************************
 void dbg_printf ( const char *format, ... )
 {
-    static char sbuf[1400];                                                     // For debug lines
-    va_list varArgs;                                                            // For variable number of params
+    static char sbuf[1400];                                                 // For debug lines
+    va_list varArgs;                                                        // For variable number of params
 
-    va_start ( varArgs, format );                                               // Prepare parameters
-    vsnprintf ( sbuf, sizeof ( sbuf ), format, varArgs );                       // Format the message
-    va_end ( varArgs );                                                         // End of using parameters
+    va_start ( varArgs, format );                                           // Prepare parameters
+    vsnprintf ( sbuf, sizeof ( sbuf ), format, varArgs );                   // Format the message
+    va_end ( varArgs );                                                     // End of using parameters
 
     Serial.println ( sbuf );
 
-    if ( DEBUG )                                                                // DEBUG on?
+    if ( DEBUG )                                                            // DEBUG on?
     {
         if ( ws.count() )
             ws.textAll ( sbuf );
     }
+}
+
+void printfAll ( const char *format, ... )
+{
+    if ( ws.count() )
+    {
+        static char sbuf[1400];
+        va_list varArgs;                                                        // For variable number of params
+
+        va_start ( varArgs, format );                                           // Prepare parameters
+        vsnprintf ( sbuf, sizeof ( sbuf ), format, varArgs );                   // Format the message
+        va_end ( varArgs );                                                     // End of using parameters
+
+        ws.textAll ( sbuf );
+    }
+}
+
+/** IP to String? */
+String ipToString ( IPAddress ip )
+{
+    String res = "";
+
+    for ( int i = 0; i < 3; i++ )
+    {
+        res += String ( ( ip >> ( 8 * i ) ) & 0xFF ) + ".";
+    }
+
+    res += String ( ( ( ip >> 8 * 3 ) ) & 0xFF );
+    return res;
 }
 
 //***************************************************************************
@@ -235,9 +269,9 @@ String formatBytes ( size_t bytes )
 //***************************************************************************
 void beep ( int delayms )
 {
-    digitalWrite ( PIEZO_PIN, HIGH );                                           // Turn PIEZO on
-    delay ( delayms );                                                          // wait for a delayms ms
-    digitalWrite ( PIEZO_PIN, LOW );                                            // Turn PIEZO off
+    digitalWrite ( PIEZO_PIN, HIGH );                                       // Turn PIEZO on
+    delay ( delayms );                                                      // wait for a delayms ms
+    digitalWrite ( PIEZO_PIN, LOW );                                        // Turn PIEZO off
 }
 
 void beepC ( int delayms )
@@ -294,13 +328,13 @@ void beep_rr ()
 
     for ( i = 0; i < songLength; i++ ) // step through the song arrays
     {
-        duration = beats[i] * tempo;  // length of note/rest in ms
+        duration = beats[i] * tempo; // length of note/rest in ms
 
-        if ( notes[i] == ' ' )        // is this a rest?
+        if ( notes[i] == ' ' ) // is this a rest?
         {
-            delay ( duration );         // then pause for a moment
+            delay ( duration ); // then pause for a moment
         }
-        else                          // otherwise, play the note
+        else                  // otherwise, play the note
         {
             analogWriteFreq ( frequency ( notes[i] ) );
             analogWrite ( PIEZO_PIN, 800 );
@@ -308,7 +342,7 @@ void beep_rr ()
             analogWrite ( PIEZO_PIN, 0 );
         }
 
-        delay ( tempo / 10 );         // brief pause between notes
+        delay ( tempo / 10 ); // brief pause between notes
     }
 
     digitalWrite ( LED_BUILTIN, HIGH );
@@ -320,7 +354,7 @@ int frequency ( char note )
     // corresponding frequency in Hz for the tone() function.
 
     int i;
-    const int numNotes = 8;  // number of notes we're storing
+    const int numNotes = 8; // number of notes we're storing
 
     // The following arrays hold the note characters and their
     // corresponding frequencies. The last "C" note is uppercase
@@ -338,9 +372,9 @@ int frequency ( char note )
 
     for ( i = 0; i < numNotes; i++ ) // Step through the notes
     {
-        if ( names[i] == note )       // Is this the one?
+        if ( names[i] == note ) // Is this the one?
         {
-            return ( frequencies[i] );  // Yes! Return the frequency
+            return ( frequencies[i] ); // Yes! Return the frequency
         }
     }
 
@@ -353,17 +387,18 @@ int frequency ( char note )
 //***************************************************************************
 void setup ( void )
 {
-    uint8_t     mac[6];
+    uint8_t mac[6];
+    char mdnsDomain[] = "";
 
     ets_install_putc1 ( ( void * ) &_u0_putc );
     system_set_os_print ( 1 );
 //  system_update_cpu_freq ( 160 );                                             // Set CPU to 80/160 MHz
 
-    Serial.begin ( 115200 );                                                    // For debug
+    Serial.begin ( 921600 );                                                // For debug
     Serial.println();
 
-    pinMode ( LED_BUILTIN, OUTPUT );                                            // initialize onboard LED as output
-    digitalWrite ( LED_BUILTIN, HIGH );                                         // Turn the LED off by making the voltage HIGH
+    pinMode ( LED_BUILTIN, OUTPUT );                                        // initialize onboard LED as output
+    digitalWrite ( LED_BUILTIN, HIGH );                                     // Turn the LED off by making the voltage HIGH
 
     // Startup Banner
     dbg_printf (
@@ -374,21 +409,24 @@ void setup ( void )
     // Load EEPROM Settings
     setupEEPROM();
 
-    pinMode ( PIEZO_PIN, OUTPUT );                                              // initialize PIEZO PIN as output
+    pinMode ( PIEZO_PIN, OUTPUT );                                          // initialize PIEZO PIN as output
 
     if ( !SILENT ) beep_rr();
 
     // Setup Access Point
-    WiFi.mode ( WIFI_AP_STA );
+    wifi_set_phy_mode ( PHY_MODE_11B );
+    WiFi.mode ( WIFI_AP );
+    WiFi.softAPConfig ( ip, ip, mask );
     chan_selected = setupAP ( channel );
+    WiFi.softAP ( ssid, NULL, chan_selected );
     WiFi.softAPmacAddress ( mac );
 
     // Show Soft AP Info
     dbg_printf (
         "SoftAP MAC: %02X:%02X:%02X:%02X:%02X:%02X\n" \
-        "SoftAP IP: " IPSTR "\n",
+        "SoftAP IP: %s\n",
         MAC2STR ( mac ),
-        IP2STR ( ip )
+        ipToString ( ip ).c_str()
     );
 
     dbg_printf ( "SYSTEM ---" );
@@ -414,11 +452,16 @@ void setup ( void )
 
     setupDNSServer();
 
-    dbg_printf ( "Starting mDNS responder" );
+    sprintf ( mdnsDomain, "%s.local", appid );
+    dbg_printf ( "Starting mDNS Responder" );
 
-    if ( !mdns.begin ( appid, ip ) )
+    if ( !mdns.begin ( mdnsDomain, ip ) )
     {
-        Serial.println ( "Error setting up mDNS responder!" );
+        Serial.println ( ">>>>> Error setting up mDNS responder!" );
+    }
+    else
+    {
+        dbg_printf ( ">>>>> mDNS Domain: %s", mdnsDomain );
     }
 
     setupHTTPServer();
@@ -431,25 +474,45 @@ void setup ( void )
         timer.attach_ms ( ( 1000 * 60 * interval ), onTimer );
     }
 
+    // Setup wifi connection callbacks
+    wifi_set_event_handler_cb ( wifi_handle_event_cb );
 
     dbg_printf ( "\nReady!\n--------------------" );
 }
 
 int setupAP ( int chan_selected )
 {
-    char no_pass[] = "\0";
+    struct softap_config config;
+
+    wifi_softap_get_config ( &config ); // Get config first.
 
     if ( chan_selected == 0 )
     {
         chan_selected = scanWiFi();
     }
 
-    dbg_printf ( "Channel %d Selected!", chan_selected );
+    //dbg_printf ( "WiFi \n\tSSID: %s\n\tPassword: %s\n\t Channel: %d", config.ssid, config.password, config.channel );
+    //dbg_printf ( "Channel %d Selected!", chan_selected );
+    //dbg_printf ( "SSID: %s", ssid );
+    //dbg_printf ( "Compare: %d", strcmp ( (char*)config.ssid, ssid ) );
 
-    if ( chan_selected != WiFi.channel() || !WiFi.SSID().equals ( ssid ) )
+    if ( config.channel != chan_selected || strcmp ( (char*)config.ssid, ssid ) )
     {
-        WiFi.softAPConfig ( ip, ip, IPAddress ( 255, 255, 255, 0 ) );
-        WiFi.softAP ( ssid, no_pass, chan_selected );
+        if ( config.channel != chan_selected )
+          dbg_printf ( "Changing WiFi channel from %d to %d.", config.channel, chan_selected );
+
+        if ( strcmp ( (char*)config.ssid, ssid ) )
+          dbg_printf ( "Changing SSID from '%s' to '%s'.", (char*)config.ssid, ssid );
+
+        WiFi.softAPdisconnect ( true );
+        WiFi.mode ( WIFI_AP );
+        wifi_set_phy_mode ( PHY_MODE_11B );
+        WiFi.softAPConfig ( ip, ip, mask );
+        WiFi.softAP ( ssid, NULL, chan_selected );
+    }
+    else
+    {
+        dbg_printf ( "No change." );
     }
 
     return chan_selected;
@@ -466,32 +529,32 @@ void setupEEPROM()
 
 void setupSPIFFS()
 {
-    FSInfo      fs_info;                                                        // Info about SPIFFS
-    Dir         dir;                                                            // Directory struct for SPIFFS
-    File        f;                                                              // Filehandle
-    String      filename;                                                       // Name of file found in SPIFFS
+    FSInfo fs_info;                                                         // Info about SPIFFS
+    Dir dir;                                                                // Directory struct for SPIFFS
+    File f;                                                                 // Filehandle
+    String filename;                                                        // Name of file found in SPIFFS
 
-    SPIFFS.begin();                                                             // Enable file system
+    SPIFFS.begin();                                                         // Enable file system
 
     // Show some info about the SPIFFS
-    uint16_t cnt = 0;
+    file_count = 0;
     SPIFFS.info ( fs_info );
     dbg_printf ( "SPIFFS Files\nName                           -      Size" );
-    dir = SPIFFS.openDir ( "/" );                                               // Show files in FS
+    dir = SPIFFS.openDir ( "/" );                                           // Show files in FS
 
-    while ( dir.next() )                                                        // All files
+    while ( dir.next() )                                                    // All files
     {
         f = dir.openFile ( "r" );
         filename = dir.fileName();
-        dbg_printf ( "%-30s - %9s",                                             // Show name and size
+        dbg_printf ( "%-30s - %9s",                                     // Show name and size
                      filename.c_str(),
                      formatBytes ( f.size() ).c_str()
                    );
-        cnt++;
+        file_count++;
     }
 
     dbg_printf ( "%d Files, %s of %s Used",
-                 cnt,
+                 file_count,
                  formatBytes ( fs_info.usedBytes ).c_str(),
                  formatBytes ( fs_info.totalBytes ).c_str()
                );
@@ -508,22 +571,25 @@ void setupDNSServer()
     dbg_printf ( "Starting DNS Server" );
     dnsd.onQuery ( [] ( const IPAddress & remoteIP, const char *domain, const IPAddress & resolvedIP )
     {
-        dbg_printf ( "DNS Query [%d]: %s -> " IPSTR, remoteIP[3], domain, IP2STR ( resolvedIP ) );
+        dbg_printf ( "DNS Query [%d]: %s -> %s", remoteIP[3], domain, ipToString ( resolvedIP ).c_str() );
 
-        /*        // connectivitycheck.android.com -> 74.125.21.113
-                if ( strstr(domain, "connectivitycheck.android.com") )
-                    dnsd.overrideIP =  IPAddress(74, 125, 21, 113);
+        // connectivitycheck.android.com -> 74.125.21.113, 172.217.21.67
+        //if ( strstr( "clients1.google.com|clients2.google.com|clients3.google.com|clients4.google.com|clients.l.google.com|connectivitycheck.android.com|connectivitycheck.gstatic.com|android.clients.google.com|play.googleapis.com", domain ) )
+        //    dnsd.overrideIP =  IPAddress(172, 217, 21, 67);
 
-                // dns.msftncsi.com -> 131.107.255.255
-                if ( strstr(domain, "msftncsi.com") )
-                    dnsd.overrideIP =  IPAddress(131, 107, 255, 255);
-        */
+        // dns.msftncsi.com -> 131.107.255.255
+        //if ( strstr(domain, "msftncsi.com") )
+        //    dnsd.overrideIP =  IPAddress(131, 107, 255, 255);
+
+        //if ( strstr( "msftncsi.com|clients1.google.com|clients2.google.com|clients3.google.com|clients4.google.com|clients.l.google.com|connectivitycheck.android.com|connectivitycheck.gstatic.com|android.clients.google.com|play.googleapis.com", domain ) )
+        //    dnsd.overrideIP =  IPAddress(ip[0], ip[1], ip[2], ip[3]+10);
+
     } );
     dnsd.onOverride ( [] ( const IPAddress & remoteIP, const char *domain, const IPAddress & overrideIP )
     {
-        dbg_printf ( "DNS Override [%d]: %s -> " IPSTR, remoteIP[3], domain, IP2STR ( overrideIP ) );
+        dbg_printf ( "DNS Override [%d]: %s -> %s", remoteIP[3], domain, ipToString ( overrideIP ).c_str() );
     } );
-    dnsd.setErrorReplyCode ( DNSReplyCode::NoError );
+    //dnsd.setErrorReplyCode ( DNSReplyCode::NoError );
     dnsd.setTTL(0);
     dnsd.start ( 53, "*", ip );
 }
@@ -533,16 +599,15 @@ void setupHTTPServer()
     // Web Server Document Setup
     dbg_printf ( "Starting HTTP Captive Portal" );
 
-    httpd.onNotFound ( onRequest );                                             // Handle request
+    // Handle HTTP requests
+    //httpd.on ( "/generate_204", onRequest );  //Android captive portal. Maybe not needed. Might be handled by notFound handler.
+    //httpd.on ( "/fwlink", onRequest );  //Microsoft captive portal. Maybe not needed. Might be handled by notFound handler.
+    httpd.onNotFound ( onRequest );
 
     // HTTP basic authentication
     httpd.on ( "/console", HTTP_GET, [] ( AsyncWebServerRequest * request )
     {
-        request->redirect ( "http://10.10.10.1/console.htm" );
-    } );
-    httpd.on ( "/console.htm", HTTP_GET, [] ( AsyncWebServerRequest * request )
-    {
-        if ( strlen( username ) > 0 && strlen( password ) > 0 )
+        if ( strlen ( username ) > 0 && strlen ( password ) > 0 )
             if ( !request->authenticate ( username, password ) )
                 return request->requestAuthentication();
 
@@ -553,15 +618,15 @@ void setupHTTPServer()
     {
         rrsession++;
         rrtotal++;
-        IPAddress remoteIP = request->client()->remoteIP();
-        ws.printfAll ( "[[b;yellow;]Rick Roll Sent!] (%d): [" IPSTR "] %s",
+        String remoteIP = ipToString ( request->client()->remoteIP() );
+        printfAll ( "[[b;yellow;]Rick Roll Sent!] (%d): [%s] %s" ,
                        rrsession,
-                       IP2STR ( remoteIP ),
+                       remoteIP.c_str(),
                        request->header ( "User-Agent" ).c_str()
                      );
-        Serial.printf ( "Rick Roll Sent! (%d): [" IPSTR "] %s\n",
+        Serial.printf ( "Rick Roll Sent! (%d): [%s] %s\n",
                         rrsession,
-                        IP2STR ( remoteIP ),
+                        remoteIP.c_str(),
                         request->header ( "User-Agent" ).c_str()
                       );
         request->send ( 200, "text/html", String ( rrsession ) );
@@ -573,7 +638,7 @@ void setupHTTPServer()
             state = statemachine::beep_c;
         }
 
-        //List all collected headers
+/*        //List all collected headers
         int headers = request->headers();
         int i;
 
@@ -582,6 +647,9 @@ void setupHTTPServer()
             AsyncWebHeader *h = request->getHeader ( i );
             Serial.printf ( "HEADER[%s]: %s\n", h->name().c_str(), h->value().c_str() );
         }
+*/
+        // Disconnect that station
+        //wifi_softap_dhcps_client_leave(NULL, remoteIP, true);
     } );
 
     httpd.on ( "/info", HTTP_GET, [] ( AsyncWebServerRequest * request )
@@ -598,11 +666,11 @@ void setupHTTPServer()
         request->send ( response );
     } );
 
+
     // attach AsyncWebSocket
     dbg_printf ( "Starting Websocket Console" );
     ws.onEvent ( onEvent );
     httpd.addHandler ( &ws );
-
     httpd.begin();
 }
 
@@ -660,29 +728,39 @@ int scanWiFi ()
     std::fill_n ( channels, 11, 0 );
 
     dbg_printf ( "Scanning WiFi Networks" );
-    int networks = WiFi.scanNetworks();
-    dbg_printf ( "%d Networks Found", networks );
-    dbg_printf ( "RSSI  CHANNEL  ENCRYPTION  BSSID              SSID" );
 
-    for ( int network = 0; network < networks; network++ )
+    for ( int count = 1; count < 4; count++ )
     {
-        String ssid_scan;
-        int32_t rssi_scan;
-        uint8_t sec_scan;
-        uint8_t *BSSID_scan;
-        int32_t chan_scan;
-        bool hidden_scan;
-        WiFi.getNetworkInfo ( network, ssid_scan, sec_scan, rssi_scan, BSSID_scan, chan_scan, hidden_scan );
+        int networks = WiFi.scanNetworks();
+        dbg_printf ( "Scan %d, %d Networks Found", count, networks );
+        dbg_printf ( "RSSI  CHANNEL  ENCRYPTION  BSSID              SSID" );
 
-        dbg_printf ( "%-6d%-9d%-12s%02X:%02X:%02X:%02X:%02X:%02X  %s",
-                     rssi_scan,
-                     chan_scan,
-                     encryptionTypes ( sec_scan ).c_str(),
-                     MAC2STR ( BSSID_scan ),
-                     ssid_scan.c_str()
-                   );
+        for ( int network = 0; network < networks; network++ )
+        {
+            String ssid_scan;
+            int32_t rssi_scan;
+            uint8_t sec_scan;
+            uint8_t *BSSID_scan;
+            int32_t chan_scan;
+            bool hidden_scan;
+            WiFi.getNetworkInfo ( network, ssid_scan, sec_scan, rssi_scan, BSSID_scan, chan_scan, hidden_scan );
 
-        channels[ chan_scan ]++;
+            // Only count channels with an rssi greater than -80
+            if ( rssi_scan > -80 )
+            {
+                dbg_printf ( "%-6d%-9d%-12s%02X:%02X:%02X:%02X:%02X:%02X  %s",
+                             rssi_scan,
+                             chan_scan,
+                             encryptionTypes ( sec_scan ).c_str(),
+                             MAC2STR ( BSSID_scan ),
+                             ssid_scan.c_str()
+                           );
+
+                channels[ chan_scan ]++;
+            }
+        }
+
+        WiFi.scanDelete();
     }
 
     // Find least used channel
@@ -693,7 +771,7 @@ int scanWiFi ()
         // Include side channels to account for signal overlap
         int current_count = 0;
 
-        for ( int i = channel - 4; i <= ( channel + 4); i++ )
+        for ( int i = channel - 4; i <= ( channel + 4 ); i++ )
         {
             if ( i > 0 )
                 current_count += channels[i];
@@ -708,22 +786,29 @@ int scanWiFi ()
         //Serial.printf( "Channel %d = %d\n", channel, current_count);
     }
 
+    dbg_printf ( "Channel %d is least used.", chan_selected );
+
     return chan_selected;
 }
 
-void readFile( String file )
+void readFile ( String file )
 {
-    File f = SPIFFS.open(file, "r");
-    if (!f) {
-        Serial.println("file open failed");
+    File f = SPIFFS.open ( file, "r" );
+
+    if ( !f )
+    {
+        Serial.println ( "file open failed" );
     }
     else
     {
-        while(f.available()) {
-            String line = f.readStringUntil('n');
+        while ( f.available() )
+        {
+            String line = f.readStringUntil ( 'n' );
+
             if ( ws.count() )
                 ws.textAll ( line );
         }
+
         f.close();
     }
 }
@@ -757,16 +842,16 @@ String getSystemInformation()
     root["spiffs_free"] = ( fs_info.totalBytes - fs_info.usedBytes );
 
     char apIP[16];
-    sprintf ( apIP, IPSTR, IP2STR ( WiFi.softAPIP() ) );
+    sprintf ( apIP, "%s", ipToString ( WiFi.softAPIP() ).c_str() );
     root["softap_mac"] = WiFi.softAPmacAddress();
     root["softap_ip"] = apIP;
 
     char staIP[16];
-    sprintf ( staIP, IPSTR, IP2STR ( WiFi.localIP() ) );
+    sprintf ( staIP, "%s", ipToString ( WiFi.localIP() ).c_str() );
     root["station_mac"] = WiFi.macAddress();
     root["station_ip"] = staIP;
 
-    root.printTo( json );
+    root.printTo ( json );
     return json;
 }
 
@@ -788,7 +873,7 @@ String getApplicationSettings()
     root["rrsession"] = rrsession;
     root["rrtotal"] = rrtotal;
 
-    root.printTo( json );
+    root.printTo ( json );
     return json;
 }
 
@@ -825,11 +910,11 @@ void eepromLoad()
     else
     {
         // Load Settings from JSON
-        sprintf ( ssid, "%s", root["ssid"].asString() );
+        sprintf ( ssid, "%s", root["ssid"].as<char*>() );
         channel = root["channel"];
         interval = root["interval"];
-        sprintf ( username, "%s", root["username"].asString() );
-        sprintf ( password, "%s", root["password"].asString() );
+        sprintf ( username, "%s", root["username"].as<char*>() );
+        sprintf ( password, "%s", root["password"].as<char*>() );
 
         DEBUG = root["debug"];
         SILENT = root["silent"];
@@ -912,6 +997,16 @@ String getEEPROM()
     return json;
 }
 
+bool disconnectStationByIP ( IPAddress station_ip )
+{
+    // Do ARP Query to get MAC address of station_ip
+
+}
+
+bool disconnectStationByMAC ( uint8_t *station_mac )
+{
+
+}
 
 //***************************************************************************
 //                    L O O P                                               *
@@ -921,7 +1016,7 @@ String getEEPROM()
 void loop ( void )
 {
     dnsd.processNextRequest();
-    ArduinoOTA.handle();  // Handle remote Wifi Updates
+    ArduinoOTA.handle(); // Handle remote Wifi Updates
 
     switch ( state )
     {
@@ -946,12 +1041,63 @@ void loop ( void )
             break;
 
         case statemachine::read_file:
-            readFile( state_string );
+            readFile ( state_string );
             break;
     }
+
     state = statemachine::none;
     state_int = 0;
     state_string = "";
+}
+
+void wifi_handle_event_cb ( System_Event_t *evt )
+{
+//    printf ( "event %x\n", evt->event );
+
+    switch ( evt->event )
+    {
+        case EVENT_STAMODE_CONNECTED:
+            printf ( "connect to ssid %s, channel %d\n",
+                     evt->event_info.connected.ssid,
+                     evt->event_info.connected.channel );
+            break;
+
+        case EVENT_STAMODE_DISCONNECTED:
+            printf ( "disconnect from ssid %s, reason %d\n",
+                     evt->event_info.disconnected.ssid,
+                     evt->event_info.disconnected.reason );
+            break;
+
+        case EVENT_STAMODE_AUTHMODE_CHANGE:
+            printf ( "mode: %d -> %d\n",
+                     evt->event_info.auth_change.old_mode,
+                     evt->event_info.auth_change.new_mode );
+            break;
+
+        case EVENT_STAMODE_GOT_IP:
+            printf ( "ip: " IPSTR " ,mask: " IPSTR " ,gw: " IPSTR,
+                     IP2STR ( &evt->event_info.got_ip.ip ),
+                     IP2STR ( &evt->event_info.got_ip.mask ),
+                     IP2STR ( &evt->event_info.got_ip.gw )
+                   );
+            printf ( "\n" );
+            break;
+
+        case EVENT_SOFTAPMODE_STACONNECTED:  // 5
+            printf ( "station connected: %02X:%02X:%02X:%02X:%02X:%02X, AID = %d\n",
+                     MAC2STR ( evt->event_info.sta_connected.mac ),
+                     evt->event_info.sta_connected.aid );
+            break;
+
+        case EVENT_SOFTAPMODE_STADISCONNECTED:  // 6
+            printf ( "station disconnected: %02X:%02X:%02X:%02X:%02X:%02X, AID = %d\n",
+                     MAC2STR ( evt->event_info.sta_disconnected.mac ),
+                     evt->event_info.sta_disconnected.aid );
+            break;
+
+        default:
+            break;
+    }
 }
 
 //***************************************************************************
@@ -959,7 +1105,7 @@ void loop ( void )
 //***************************************************************************
 void onRequest ( AsyncWebServerRequest *request )
 {
-    digitalWrite ( LED_BUILTIN, LOW );                                          // Turn the LED on by making the voltage LOW
+    digitalWrite ( LED_BUILTIN, LOW );                                      // Turn the LED on by making the voltage LOW
 
     IPAddress remoteIP = request->client()->remoteIP();
     dbg_printf (
@@ -971,27 +1117,49 @@ void onRequest ( AsyncWebServerRequest *request )
 
     String path = request->url();
 
-    if ( ( !SPIFFS.exists ( path ) && !SPIFFS.exists ( path + ".gz" ) ) ||  ( request->host() != "10.10.10.1" ) )
+    if ( request->host() != "mobile-rr.local" && request->host() != WiFi.softAPIP().toString() ) {
+        AsyncWebServerResponse *response = request->beginResponse( 307 );
+        response->addHeader ( "X-Frame-Options", "deny" );
+        response->addHeader ( "Cache-Control", "no-cache" );
+        response->addHeader ( "Pragma", "no-cache" );
+        response->addHeader ( "Location", "http://mobile-rr.local/index.htm" );
+        request->send ( response );
+    }
+    else if ( !file_count )
     {
-        AsyncWebServerResponse *response = request->beginResponse(302);
-        response->addHeader("Cache-Control","no-cache");
-        response->addHeader("Pragma","no-cache");
-        response->addHeader ("Location", "http://10.10.10.1/index.htm" );
-        request->send(response);
+        request->send_P (200, "text/plain", "SPIFFS Missing! (Upload File System Image)" );
+    }
+    else if ( !SPIFFS.exists ( path ) && !SPIFFS.exists ( path + ".gz" ) )
+    {
+        AsyncWebServerResponse *response = request->beginResponse ( 302, "text/plain", "" );
+        response->addHeader ( "Location", "http://mobile-rr.local/index.htm" );
+        request->send ( response );
     }
     else
     {
+        char s_tmp[] = "";
+        AsyncWebServerResponse *response;
+
         if ( !request->hasParam ( "download" ) && SPIFFS.exists ( path + ".gz" ) )
         {
-            request->send ( SPIFFS, path, String(), request->hasParam ( "download" ) );
+            response = request->beginResponse ( SPIFFS, path, String(), request->hasParam ( "download" ) );
         }
         else
         {
-            request->send ( SPIFFS, path );                                     // Okay, send the file
+            response = request->beginResponse ( SPIFFS, path );                         // Okay, send the file
+
         }
+
+        response->addHeader ( "Cache-Control", "no-cache, no-store, must-revalidate" );
+        response->addHeader ( "Pragma", "no-cache" );
+        response->addHeader ( "Expires", "-1" );
+//        response->setContentLength (CONTENT_LENGTH_UNKNOWN);
+        sprintf ( s_tmp, "%d", ESP.getFreeHeap() );
+        response->addHeader ( "ESP-Memory", s_tmp );
+        request->send ( response );
     }
 
-    digitalWrite ( LED_BUILTIN, HIGH );                                         // Turn the LED off by making the voltage HIGH
+    digitalWrite ( LED_BUILTIN, HIGH );                                     // Turn the LED off by making the voltage HIGH
 }
 
 
@@ -1198,19 +1366,19 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
     // --------------------------
     else if ( !strcasecmp_P ( msg, PSTR ( "ls" ) ) )
     {
-        FSInfo      fs_info;
-        uint16_t    cnt = 0;
-        String      filename;
+        FSInfo fs_info;
+        uint16_t cnt = 0;
+        String filename;
 
         client->printf_P ( PSTR ( "[[b;green;]SPIFFS Files]\r\nName                           -      Size" ) );
-        Dir dir = SPIFFS.openDir ( "/" );                                       // Show files in FS
+        Dir dir = SPIFFS.openDir ( "/" );                               // Show files in FS
 
-        while ( dir.next() )                                                    // All files
+        while ( dir.next() )                                            // All files
         {
             cnt++;
             File f = dir.openFile ( "r" );
             filename = dir.fileName();
-            client->printf_P ( PSTR ( "%-30s - %9s" ) ,                         // Show name and size
+            client->printf_P ( PSTR ( "%-30s - %9s" ),              // Show name and size
                                filename.c_str(),
                                formatBytes ( f.size() ).c_str()
                              );
@@ -1218,12 +1386,12 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
         }
 
         SPIFFS.info ( fs_info );
-        client->printf_P ( PSTR ( "%d Files, %s of %s Used" ) ,
+        client->printf_P ( PSTR ( "%d Files, %s of %s Used" ),
                            cnt,
                            formatBytes ( fs_info.usedBytes ).c_str(),
                            formatBytes ( fs_info.totalBytes ).c_str()
                          );
-        client->printf_P ( PSTR ( "%s Free" ) ,
+        client->printf_P ( PSTR ( "%s Free" ),
                            formatBytes ( fs_info.totalBytes - fs_info.usedBytes ).c_str()
                          );
     }
@@ -1231,7 +1399,7 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
     {
         if ( !strncasecmp_P ( msg, PSTR ( "cat " ), 4 ) )
         {
-            if ( SPIFFS.exists(&msg[4]) )
+            if ( SPIFFS.exists ( &msg[4] ) )
             {
                 state_string = &msg[4];
                 state = statemachine::read_file;
@@ -1247,9 +1415,9 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
     {
         if ( !strncasecmp_P ( msg, PSTR ( "rm " ), 3 ) )
         {
-            if ( SPIFFS.exists(&msg[3]) )
+            if ( SPIFFS.exists ( &msg[3] ) )
             {
-                SPIFFS.remove(&msg[3]);
+                SPIFFS.remove ( &msg[3] );
             }
             else
             {
@@ -1285,9 +1453,9 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
 
         client->printf_P ( PSTR ( "[[b;cyan;]NETWORK]" ) );
         client->printf_P ( PSTR ( "SoftAP SSID: %s" ), ssid );
-        client->printf_P ( PSTR ( "SoftAP  MAC: %02X:%02X:%02X:%02X:%02X:%02X\nSoftAP   IP: " IPSTR "\n " ),
+        client->printf_P ( PSTR ( "SoftAP  MAC: %02X:%02X:%02X:%02X:%02X:%02X\nSoftAP   IP: %s\n " ),
                            MAC2STR ( mac ),
-                           IP2STR ( ip )
+                           ipToString ( ip ).c_str()
                          );
 
         client_status ( client );
@@ -1307,7 +1475,7 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
 
                 if ( v == 0 ) v = 50;
 
-                client->printf_P ( PSTR ( "[[b;yellow;]CHIRP!] %dms" ) , v );
+                client->printf_P ( PSTR ( "[[b;yellow;]CHIRP!] %dms" ), v );
                 state_int = v;
                 state = statemachine::beep_c;
             }
@@ -1317,7 +1485,7 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
 
                 if ( v == 0 ) v = 50;
 
-                client->printf_P ( PSTR ( "[[b;yellow;]BEEP!] %dms" ) , v );
+                client->printf_P ( PSTR ( "[[b;yellow;]BEEP!] %dms" ), v );
                 state_int = v;
                 state = statemachine::beep;
             }
@@ -1328,12 +1496,12 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
         if ( !strncasecmp_P ( msg, PSTR ( "user " ), 5 ) )
         {
             sprintf ( username, "%s", &msg[5] );
-            client->printf_P ( PSTR ( "[[b;yellow;]Changing Username:] %s" ) , username );
+            client->printf_P ( PSTR ( "[[b;yellow;]Changing Username:] %s" ), username );
             CHANGED = true;
         }
         else
         {
-            client->printf_P ( PSTR ( "[[b;yellow;]Username:] %s" ) , username );
+            client->printf_P ( PSTR ( "[[b;yellow;]Username:] %s" ), username );
         }
     }
     else if ( !strncasecmp_P ( msg, PSTR ( "pass" ), 4 ) )
@@ -1341,24 +1509,24 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
         if ( !strncasecmp_P ( msg, PSTR ( "pass " ), 5 ) )
         {
             sprintf ( password, "%s", &msg[5] );
-            client->printf_P ( PSTR ( "[[b;yellow;]Changing Password:] %s" ) , password );
+            client->printf_P ( PSTR ( "[[b;yellow;]Changing Password:] %s" ), password );
             CHANGED = true;
         }
         else
         {
-            client->printf_P ( PSTR ( "[[b;yellow;]Password:] %s" ) , password );
+            client->printf_P ( PSTR ( "[[b;yellow;]Password:] %s" ), password );
         }
     }
     else if ( !strncasecmp_P ( msg, PSTR ( "ssid" ), 4 ) )
     {
         if ( l == 4 )
         {
-            client->printf_P ( PSTR ( "[[b;yellow;]SSID:] %s" ) , ssid );
+            client->printf_P ( PSTR ( "[[b;yellow;]SSID:] %s" ), ssid );
         }
         else
         {
             sprintf ( ssid, "%s", &msg[5] );
-            client->printf_P ( PSTR ( "[[b;yellow;]Changing WiFi SSID:] %s" ) , ssid );
+            client->printf_P ( PSTR ( "[[b;yellow;]Changing WiFi SSID:] %s" ), ssid );
 
             if ( !SILENT )
             {
@@ -1376,11 +1544,11 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
         {
             if ( channel == 0 )
             {
-                client->printf_P ( PSTR ( "[[b;yellow;]Channel:] AUTO (%d)" ) , WiFi.channel() );
+                client->printf_P ( PSTR ( "[[b;yellow;]Channel:] AUTO (%d)" ), WiFi.channel() );
             }
             else
             {
-                client->printf_P ( PSTR ( "[[b;yellow;]Channel:] %d" ) , WiFi.channel() );
+                client->printf_P ( PSTR ( "[[b;yellow;]Channel:] %d" ), WiFi.channel() );
             }
         }
         else
@@ -1389,7 +1557,7 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
 
             if ( v > 0 && v < 12 )
             {
-                client->printf_P ( PSTR ( "[[b;yellow;]Changing WiFi Channel:] %d" ) , v );
+                client->printf_P ( PSTR ( "[[b;yellow;]Changing WiFi Channel:] %d" ), v );
             }
             else
             {
@@ -1421,7 +1589,7 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
         {
             int v = atoi ( &msg[4] );
 
-            if ( v < 0 )
+            if ( v < 1 )
             {
                 v = 0;
                 timer.detach();
@@ -1451,7 +1619,7 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
         }
         else
         {
-            client->printf_P ( PSTR ( "[[b;yellow;]Auto Scan Interval:] %d min(s)" ) , interval );
+            client->printf_P ( PSTR ( "[[b;yellow;]Auto Scan Interval:] %d min(s)" ), interval );
         }
     }
     else if ( !strncasecmp_P ( msg, PSTR ( "save" ), 4 ) )
@@ -1497,7 +1665,7 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
             else
             {
                 Serial.printf ( "Writing File: [%s]", &msg[4] );
-                client->printf_P ( PSTR ( "[[b;yellow;]Changing Message:] %s" ) , &msg[4] );
+                client->printf_P ( PSTR ( "[[b;yellow;]Changing Message:] %s" ), &msg[4] );
 
                 if ( !SILENT )
                 {
@@ -1508,6 +1676,7 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
                 // Write Message to "message.htm" in SPIFFS
                 f.print ( &msg[4] );
             }
+
             f.close();
         }
     }
@@ -1532,11 +1701,11 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
             }
         }
 
-        client->printf_P ( PSTR ( "[[b;yellow;]Rick Roll Count]: %d Session, %d Total" ) , rrsession, rrtotal );
+        client->printf_P ( PSTR ( "[[b;yellow;]Rick Roll Count]: %d Session, %d Total" ), rrsession, rrtotal );
     }
     else if ( !strncasecmp_P ( msg, PSTR ( "json" ), 4 ) )
     {
-        if (l > 4)
+        if ( l > 4 )
         {
             String json;
 
@@ -1555,6 +1724,7 @@ void execCommand ( AsyncWebSocketClient *client, char *msg )
                 // information
                 json = getSystemInformation();
             }
+
             client->printf_P ( json.c_str() );
         }
     }
@@ -1587,19 +1757,19 @@ void client_status ( AsyncWebSocketClient *client )
 {
     struct station_info *station = wifi_softap_get_station_info();
     uint8_t client_count = wifi_softap_get_station_num();
-    struct ip_addr *ip;
+    struct ip4_addr *ip;
     client->printf_P ( PSTR ( "[[b;yellow;]Connected Client(s)]: %d" ),
                        client_count
                      );
-    int i = 1;
+    int i = 0;
 
     while ( station != NULL )
     {
         ip = &station->ip;
-        client->printf_P ( PSTR ( "%d: MAC: %02X:%02X:%02X:%02X:%02X:%02X\n    IP: " IPSTR ),
+        client->printf_P ( PSTR ( "%d: MAC: %02X:%02X:%02X:%02X:%02X:%02X\n    IP: %s" ),
                            i,
                            MAC2STR ( station->bssid ),
-                           IP2STR ( ip->addr )
+                           ipToString ( ip->addr ).c_str()
                          );
         i++;
         station = STAILQ_NEXT ( station, next );

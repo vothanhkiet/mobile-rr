@@ -1,20 +1,16 @@
 #
-# Clone files from "www" to "data" folder and gzip
+# Clone files from "www" to "data" folder
+# Then compress and embed resources
 #
 from SCons.Script import DefaultEnvironment
 from distutils import dir_util
 from shutil import copyfileobj, move, rmtree
 import base64, gzip, os, sys, re
 
-def gzFile (file):
+def gzFile(file):
     with open(file, 'rb') as f_in, gzip.open(file + '.gz', 'wb') as f_out:
         copyfileobj(f_in, f_out)
     os.remove(file)
-
-# remove 'data' folder after upload
-def after_upload(source, target, env):
-    print "after_upload"
-    rmtree(data)
 
 def read_file(file):
     with open(file, 'r') as myfile:
@@ -111,6 +107,8 @@ def combine_js(content):
             # Write out new line
             new_file.write( js_content )
         new_file.close()
+        if re.search(r'gz', options):
+            gzFile( data + "script.js" )
 
         # Remove Javascript includes from Content
         content = pattern.sub('', content)
@@ -137,43 +135,76 @@ def embed_media(content):
 
     return content
 
+# Build httpdocs for web server
+def before_buildfs(source, target, env):
+    print "before_buildfs"
+
+# SPIFFS Stats With Different Combinations of Processing
+# Updated: 12.28.2016
+# No Processing
+#   20 Files, 1.46 MB of 2.81 MB Used
+# custom_option = "gz"
+#   19 Files, 898.84 KB of 2.81 MB Used
+# custom_option =   "gz|css"
+#   17 Files, 896.88 KB of 2.81 MB Used
+# custom_option = "gz|css|js"
+#   13 Files, 893.94 KB of 2.81 MB Used
+# custom_option = "gz|css|js|media"
+#   8 Files, 898.60 KB of 2.81 MB Used
+
+    # clone 'www' folder to 'data' folder
+    files = dir_util.copy_tree(www, data, )
+
+    # embed Javascript, CSS & media into html files
+    if re.search(r'css|js|media', options):
+        for file in files:
+            if re.search(r'\.htm', file):
+                print file
+                content = read_file(file)
+                if re.search(r'css', options):
+                    content = embed_css( content )
+                if re.search(r'js', options):
+                    content = combine_js( content )
+                if re.search(r'media', options):
+                    content = embed_media( content )
+
+                # Save New HTML File
+                with open(file, 'w') as new_file:
+                    new_file.write( content )
+                new_file.close()
+
+    # gzip appropriate files
+    if re.search(r'gz', options):
+        pattern = re.compile(ur'\.htm|\.css|\.js|\.map|\.svg|\.ico')
+        for file in files:
+            if re.search(pattern, file):
+                if os.path.exists(file):
+                    print file
+                    gzFile( file )
+
+
+# remove 'data' folder after upload
+def after_uploadfs(source, target, env):
+    print "after_uploadfs"
+    rmtree(data)
+
 
 env = DefaultEnvironment()
+options = base64.b64decode(ARGUMENTS.get("CUSTOM_OPTION"))
 
 # Set parameters from environment variables
 data = env['PROJECT_DIR'] + "/data/"
 www = env['PROJECT_DIR'] + "/www/"
 
-# Only run when building & uploading SPIFFS image
-env.AddPostAction("uploadfs", after_upload)
-
 # Show parameters
 print data
 print www
+print options
 
-# Only run this script when building SPIFFS image
-if 'SPIFFS_START' in env:
-    # clone 'www' folder to 'data' folder
-    files = dir_util.copy_tree(www, data, )
+# Only run when building & uploading SPIFFS image
+#env.AddPreAction("buildfs", before_buildfs)
+env.AddPreAction("$BUILD_DIR/spiffs.bin", before_buildfs)
+env.AddPostAction("uploadfs", after_uploadfs)
 
-    # embed Javascript, CSS into html files
-    for file in files:
-        if re.search(r'\.htm', file):
-            print file
-            content = read_file(file)
-            content = embed_css( content )
-            content = combine_js( content )
-            content = embed_media( content )
-
-            # Save New HTML File
-            with open(file, 'w') as new_file:
-                new_file.write( content )
-            new_file.close()
-
-    # gzip appropriate files
-    pattern = re.compile(ur'\.htm|\.css|\.js|\.svg')
-    for file in files:
-        if re.search(pattern, file):
-            if os.path.exists(file):
-                print file
-                gzFile( file )
+#if 'SPIFFS_START' in env:
+#   before_buildfs("","buildfs",env)
